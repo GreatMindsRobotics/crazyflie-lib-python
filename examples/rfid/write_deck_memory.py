@@ -1,0 +1,121 @@
+"""
+This program connects to the specified Crazyflie and writes to the
+one wire memory.
+
+Note: this will not work with the BLE version of the nRF51 firmware
+(flashed on production units).
+See https://github.com/bitcraze/crazyflie-clients-python/issues/166
+"""
+import logging
+import sys
+import time
+
+import cflib.crtp
+from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.mem import MemoryElement
+from cflib.crazyflie.mem import OWElement
+from cflib.utils import uri_helper
+
+uri = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
+
+# Only output errors from the logging framework
+logging.basicConfig(level=logging.ERROR)
+
+class WriteOwExample:
+    def __init__(self, link_uri):
+        """ Initialize and run the example with the specified link_uri """
+
+        # Create a Crazyflie object without specifying any cache dirs
+        self._cf = Crazyflie()
+
+        # Connect some callbacks from the Crazyflie API
+        self._cf.connected.add_callback(self._connected)
+        self._cf.disconnected.add_callback(self._disconnected)
+        self._cf.connection_failed.add_callback(self._connection_failed)
+        self._cf.connection_lost.add_callback(self._connection_lost)
+
+        print('Connecting to %s' % link_uri, flush=True)
+
+        # Try to connect to the Crazyflie
+        self._cf.open_link(link_uri)
+
+        # Variable used to keep main loop occupied until disconnect
+        self.is_connected = True
+
+    def _connected(self, link_uri):
+        """ This callback is called from the Crazyflie API when a Crazyflie
+        has been connected and the TOCs have been downloaded."""
+        print('Connected to %s' % link_uri, flush=True)
+
+        mems = self._cf.mem.get_mems(MemoryElement.TYPE_1W)
+        print('Found {} 1-wire memories'.format(len(mems)))
+        if len(mems) > 0:
+            print('Writing test configuration to'
+                  ' memory {}'.format(mems[0].id))
+
+            mems[0].vid = 0x17
+            mems[0].pid = 0x01
+
+            board_name_id = OWElement.element_mapping[1]
+            board_rev_id = OWElement.element_mapping[2]
+
+            mems[0].elements[board_name_id] = 'gmrRFID'
+            mems[0].elements[board_rev_id] = 'A'
+
+            mems[0].write_data(self._data_written)
+
+    def _data_written(self, mem, addr):
+        print('Data written, reading back...', flush=True)
+        mem.update(self._data_updated)
+
+    def _data_updated(self, mem):
+        print('Updated id={}'.format(mem.id))
+        print('\tType      : {}'.format(mem.type))
+        print('\tSize      : {}'.format(mem.size))
+        print('\tValid     : {}'.format(mem.valid))
+        print('\tName      : {}'.format(mem.name))
+        print('\tVID       : 0x{:02X}'.format(mem.vid))
+        print('\tPID       : 0x{:02X}'.format(mem.pid))
+        print('\tPins      : 0x{:02X}'.format(mem.pins))
+        print('\tElements  : ')
+
+        for key in mem.elements:
+            print('\t\t{}={}'.format(key, mem.elements[key]))
+
+        self._cf.close_link()
+
+    def _connection_failed(self, link_uri, msg):
+        """Callback when connection initial connection fails (i.e no Crazyflie
+        at the specified address)"""
+        print('Connection to %s failed: %s' % (link_uri, msg))
+        self.is_connected = False
+
+    def _connection_lost(self, link_uri, msg):
+        """Callback when disconnected after a connection has been made (i.e
+        Crazyflie moves out of range)"""
+        print('Connection to %s lost: %s' % (link_uri, msg))
+
+    def _disconnected(self, link_uri):
+        """Callback when the Crazyflie is disconnected (called in all cases)"""
+        print('Disconnected from %s' % link_uri)
+        self.is_connected = False
+
+
+if __name__ == '__main__':
+    print('This example will not work with the BLE version of the nRF51'
+          ' firmware (flashed on production units). See https://github.com'
+          '/bitcraze/crazyflie-clients-python/issues/166')
+
+    # Initialize the low-level drivers
+    cflib.crtp.init_drivers()
+
+    le = WriteOwExample(uri)
+
+    # The Crazyflie lib doesn't contain anything to keep the application alive,
+    # so this is where your application should do something. In our case we
+    # are just waiting until we are disconnected.
+    try:
+        while le.is_connected:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        sys.exit(1)
